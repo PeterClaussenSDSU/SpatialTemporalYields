@@ -1,0 +1,239 @@
+---
+title: "Overview"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## United States Department of Agriculture, National Agricultural Statistics Service
+quickstats.nass.usda.gov
+http://quickstats.nass.usda.gov
+
+\section*{South Dakota Corn Yield}
+
+```{r}
+library(maps)
+```
+
+I've frequently used the USDA National Agricultural Statistics Service web site for crop yield data. However, it becomes tiresome to download all the different types of data I'd like to examine, and to read these into R. So, I've gotten key that allows me to query the datbase directly.
+
+We can get CSV formatted data, using a query of the form
+```
+   http://quickstats.nass.usda.gov/api/api_GET/?key=api key&
+      commodity_desc=CORN&year__GE=2012&state_alpha=VA&format=CSV
+```
+
+I've defined \verb|api_key| as a hidden variable in R and will use this to produce a query URL.
+```{r,echo=FALSE}
+api_key = "FB42391F-8B9C-357B-AC8E-25D194170B49"
+```
+
+For county level data, we want to use the code
+```agg_level_desc``` set to "COUNTY". "STATE" or "AG DISTRICT" as also supported. We only want the yearly total, so we need to include \verb|freq_desc| set to "ANNUAL" More codes are available at ```http://quickstats.nass.usda.gov/api```
+
+```{r}
+query = "http://quickstats.nass.usda.gov/api/api_GET/?key="
+query = paste(query,api_key,sep="")
+query = paste(query,"&commodity_desc=CORN&year=2014&state_alpha=SD",sep="")
+query = paste(query,"&agg_level_desc=COUNTY&freq_desc=ANNUAL",sep="")
+query = paste(query,"&format=CSV",sep="")
+query
+```
+
+There are a couple packages for submitting web page queries via R, including one (```RCurl```) that formats parameters, but for this short URL, we can just use the ```url``` command and read from the returned CSV string into a data table.
+
+```{r}
+url(query)
+sdcorn.tab <- read.csv(url(query))
+head(sdcorn.tab)
+```
+
+Check the statistics that are returned. There will be multiple types returned, so we will need to select a subset of the data.
+
+```{r}
+levels(sdcorn.tab$statisticcat_desc)
+```
+
+We'll consider Yield, first. Convert the NASS County Name to something maps can use.
+
+```{r}
+sdcorn.tab <- subset(sdcorn.tab, sdcorn.tab$statisticcat_desc == "YIELD")
+#sdcorn.tab <- subset(sdcorn.tab, sdcorn.tab$statisticcat_desc == "AREA PLANTED")
+sdcorn.tab <- subset(sdcorn.tab, sdcorn.tab$county_name != "OTHER (COMBINED) COUNTIES")
+
+sdcorn.tab$county_name <- tolower(as.character(sdcorn.tab$county_name))
+sdcorn.tab$Value <- as.numeric(sdcorn.tab$Value)
+sdcorn.tab$yield_ratio = sdcorn.tab$Value/max(sdcorn.tab$Value)
+
+#maps need appended state name
+sdcorn.tab$map_name <- paste("south dakota",sdcorn.tab$county_name,sep=",")
+```
+
+Yield data is missing for some counties, but we'll want to plot all county outlines. 
+
+```{r}
+map.colors <- colorRampPalette(c('lightblue','darkblue'))(100)[floor(sdcorn.tab$yield_ratio*100)+1]
+map("county", "south dakota", col = "lightgray", fill = TRUE, lty = 1, lwd = 1)
+map("county", regions = sdcorn.tab$map_name, col = map.colors, fill = TRUE, lty = 1, lwd= 1, add = TRUE)
+```
+
+To generate some statistics for these plots, we start with a map object.
+
+```{r}
+corn.map <- map("county", regions = sdcorn.tab$map_name, col = map.colors, fill = TRUE, plot=FALSE)
+```
+
+Then convert to polygons, using \verb|maptools|
+
+```{r}
+library(maptools)
+corn.poly <- map2SpatialPolygons(corn.map, corn.map$names)
+```
+
+Next, get neighbor information. For this, we use spdep, and accept defaults.
+
+```{r}
+library(spdep)
+corn.nb <- poly2nb(corn.poly)
+corn.wt <- nb2listw(corn.nb)
+```
+
+Now we can compute a global Moran's $I$.
+
+```{r}
+moran.test(sdcorn.tab$Value,corn.wt)
+```
+
+This is strange; it suggests that yield for corn is randomly distributed. Looking at the original map, I would have expected a negative value. So, we should plot the local $I$.
+
+```{r}
+corn.moran <- localmoran(sdcorn.tab$Value,corn.wt)
+iratio <- corn.moran[,1]
+min.i <- min(iratio)
+max.i <- max(iratio)
+rng.i <- max.i-min.i
+iratio <- (iratio - min.i)/rng.i
+map.colors <- colorRampPalette(c('lightblue','darkblue'))(100)[floor(iratio*100)+1]
+map("county", "south dakota", col = "lightgray", fill = TRUE, lty = 1, lwd = 1)
+map("county", regions = sdcorn.tab$map_name, col = map.colors, fill = TRUE, lty = 1, lwd= 1, add = TRUE)
+```
+
+We can consider the Moran's plot.
+
+```{r}
+moran.plot(sdcorn.tab$Value,corn.wt)
+```
+
+Compare this with Geary's and Getis-Ord
+
+```{r}
+geary.test(sdcorn.tab$Value,corn.wt)
+```
+
+```{r}
+corn.wb <- nb2listw(corn.nb,style="B")
+globalG.test(sdcorn.tab$Value,corn.wb)
+```
+
+Neither show significance, so we conclude that corn acres planted in South Dakota in 2014 is randomly distributed.
+
+# Soybeans
+Let's try to repeat this with soybean data.
+
+```{r}
+query = "http://quickstats.nass.usda.gov/api/api_GET/?key="
+query = paste(query,api_key,sep="")
+query = paste(query,"&commodity_desc=SOYBEANS&year__GE=2014&state_alpha=SD",sep="")
+query = paste(query,"&agg_level_desc=COUNTY&freq_desc=ANNUAL",sep="")
+query = paste(query,"&format=CSV",sep="")
+
+sdsoybean.tab <- read.csv(url(query))
+
+sdsoybean.tab <- subset(sdsoybean.tab, sdsoybean.tab$statisticcat_desc == "AREA HARVESTED")
+sdsoybean.tab <- subset(sdsoybean.tab, sdsoybean.tab$county_name != "OTHER (COMBINED) COUNTIES")
+
+sdsoybean.tab$county_name <- tolower(as.character(sdsoybean.tab$county_name))
+sdsoybean.tab$Value <- as.numeric(sdsoybean.tab$Value)
+sdsoybean.tab$yield_ratio = sdsoybean.tab$Value/max(sdsoybean.tab$Value)
+sdsoybean.tab$map_name <- paste("south dakota",sdsoybean.tab$county_name,sep=",")
+```
+
+```{r}
+map.colors <- colorRampPalette(c('lightgreen','darkgreen'))(100)[floor(sdcorn.tab$yield_ratio*100)+1]
+map("county", "south dakota", col = "lightgray", fill = TRUE, lty = 1, lwd = 1)
+map("county", regions = sdsoybean.tab$map_name, col = map.colors, fill = TRUE, lty = 1, lwd= 1, add = TRUE)
+```
+
+Repeat the spatial statistics from above.
+
+```{r}
+beans.map <- map("county", regions = sdsoybean.tab$map_name, col = map.colors, fill = TRUE, plot=FALSE)
+beans.poly <- map2SpatialPolygons(beans.map, beans.map$names)
+beans.nb <- poly2nb(beans.poly)
+#beans.wt <- nb2listw(beans.nb)
+```
+
+So, here's a problem - we can't get weights for soybean data. Soybeans are not as commonly grown across South Dakota, and there is one isolated county. \verb|nb2listw| won' accept this map. That's odd in itself. This county appears to have had a large number of acres harvested, but the neighboring counties reported no acreage planted in soybeans. There are two things I could do with this. I could delete the isolated county, but that result in a misleading analysis - this county would contribute to a negative Moran's $I$. I could generate a full list of county data, and include 0 values for the missing counties. But this is also unsatisfying, since we can't assume there were not soybeans planted, only that there were no acres reported. So, I'll just leave off here, for now.
+
+# Daymet
+
+https://daac.ornl.gov/cgi-bin/dsviewer.pl?ds_id=1328
+netCDF
+
+https://davemfish.wordpress.com/code/rexample1/
+
+https://github.com/ornldaac/thredds_opendap_r_max_temperature
+https://github.com/ornldaac/web_services_data_access
+
+## NLDAS
+
+North America Land Data Assimilation System (NLDAS) Daily Air Temperatures and Heat Index, years 1979-2011 on CDC WONDER Online Database, released 2013. 
+
+wonder.cdc.gov/NASA-NLDAS.html
+http://wonder.cdc.gov/NASA-NLDAS.html
+
+This site is limited; we need to find a better source.
+
+https://climatedataguide.ucar.edu/climate-data-tools-and-analysis
+
+From 
+https://climatedataguide.ucar.edu/climate-data
+https://climatedataguide.ucar.edu/climate-data/daymet-daily-surface-weather-and-climatological-summaries
+
+## IPNI
+
+IPNI. 2012. A Nutrient Use Information System (NuGIS) for the U.S. Norcross, GA. 
+
+http://nugis.ipni.net/About%20NuGIS/
+http://nugis.ipni.net/TabularData/
+
+# Data Dictionary
+
+http://nugis.ipni.net/media/files/huc8_data_dictionary.xlsx
+
+# County Data
+http://nugis.ipni.net/media/files/county_data_1987_2014.xlsx
+
+## CDC Wonder
+
+Daily Fine Particulate Matter (PM2.5) ($\mu g/m^3$) for years 2003-2011 on CDC WONDER Online Database, released 2013
+wonder.cdc.gov/NASA-PM.html
+
+## MODIS
+
+Moderate Resolution Imaging Spectroradiometer (MODIS) Daily Land Surface Temperature (LST), years 2003-2008 on CDC WONDER Online Database, released 2012.
+
+wonder.cdc.gov/NASA-LST.html
+http://wonder.cdc.gov/NASA-LST.html
+
+## HWWRPN
+
+Hard Winter Wheat Regional Nurseries
+www.ars.usda.gov/Main/docs.htm?docid=11932
+http://www.ars.usda.gov/Main/docs.htm?docid=11932
+
+https://www.ars.usda.gov/ARSUserFiles/30421000/HardWinterWheatRegionalNurseryProgram/2015%20NRPN.xlsx
